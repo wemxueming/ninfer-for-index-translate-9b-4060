@@ -23,7 +23,7 @@ The model artifact (`.ninfer` format, ~6.5 GB) is hosted on Hugging Face:
 
 - Base model: [IndexTeam/Index-Translate-9B](https://huggingface.co/IndexTeam/Index-Translate-9B)
 - Task: translation (EN ⇄ ZH), License: Apache-2.0
-- Required file: `index_translate_9b_v3.ninfer`
+- Required files: `index_translate_9b_v3.ninfer`, `index_chat_template.jinja`
 
 Weights are not part of this repository; download them separately (see "Running" below).
 
@@ -59,22 +59,22 @@ Output: `build-89/apps/ninfer-serve` (first full build takes ~1–2 hours; `-j 8
 ### Download the model
 
 ```bash
-hf download snowen/index-translate-9b-ninfer index_translate_9b_v3.ninfer --local-dir .
-# or: huggingface-cli download snowen/index-translate-9b-ninfer index_translate_9b_v3.ninfer --local-dir .
+hf download snowen/index-translate-9b-ninfer index_translate_9b_v3.ninfer index_chat_template.jinja --local-dir .
+# or: huggingface-cli download snowen/index-translate-9b-ninfer index_translate_9b_v3.ninfer index_chat_template.jinja --local-dir .
 ```
 
 ## Running
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 \
-NINFER_KV_WINDOW=10240 NINFER_KV_RETRIEVE=8192 NINFER_KV_REUSE_HOSTBACKED=1 \
 ./build-89/apps/ninfer-serve ./index_translate_9b_v3.ninfer \
-  --host 127.0.0.1 --port 8091 --model-id index-translate-9b \
-  --max-context 8192 --max-concurrency 1 \
-  --derive-session-keys --max-shared-prefixes 0 \
-  --prefill-chunk 1024 \
-  --kv-capacity 10240 --kv-dtype int8 \
-  --host-kv-mib 2048
+  --device 0 \
+  --host 127.0.0.1 --port 8099 --chat-template index_chat_template.jinja \
+  --max-context 4096 --max-concurrency 8 --no-prefix-reuse \
+  --kv-dtype k8v4 \
+  --spec mtp --draft-tokens 2 --adaptive-mtp \
+  --no-thinking \
+  --device-profile auto \
+  --no-cuda-graph
 ```
 
 You can also use the launcher scripts in the repo root (e.g. [`start-9b.sh`](start-9b.sh); update its `MODEL` path to the downloaded artifact filename).
@@ -82,16 +82,22 @@ You can also use the launcher scripts in the repo root (e.g. [`start-9b.sh`](sta
 Verify the server:
 
 ```bash
-curl http://127.0.0.1:8091/v1/chat/completions \
+curl http://127.0.0.1:8099/v1/chat/completions \
   -H 'Content-Type: application/json' \
-  -d '{"model":"index-translate-9b","messages":[{"role":"user","content":"Translate to English: 今天天气不错"}],"max_tokens":256}'
+  -d '{"model":"index_translate_9b_v3","messages":[{"role":"user","content":"Translate to English: 今天天气不错"}],"max_tokens":256}'
 ```
+
+(Without `--model-id`, the public model name comes from the artifact's `metadata.name`.)
+
+Field-test screenshot (RTX 4060 8 GB, ~70 tok/s decode, MTP acceptance 40+/45):
+
+![Field test](docs/demo.png)
 
 ## Caveats
 
 1. **One GPU architecture per clean build directory.** Mixing `.obj` files from different eras in one link produces a binary that crashes at startup (`0xC0000005 @ 0x18c729`). After switching architectures or rolling back versions, delete the `.obj` files or use a fresh directory — see [`src/根因与修法-0x18c729-20261003.md`](src/根因与修法-0x18c729-20261003.md).
 2. **Do not wrap nvcc with sccache** (tested: `fatbinary` then fails to find intermediate `.ptx` files); apply the cache launcher to C/CXX only.
-3. **8 GB VRAM relies on int8 KV + the host-backed ring**: `--kv-dtype int8` and `NINFER_KV_REUSE_HOSTBACKED=1` are the key settings. If VRAM is tight, lower `--kv-capacity` / `--host-kv-mib` (for a bf16 small-context profile see [`start-9b-bf16.sh`](start-9b-bf16.sh)).
+3. **8 GB VRAM relies on `--kv-dtype k8v4` (fp8 keys + nvfp4 values) and `--device-profile auto`**: this is the key combination for the RTX 4060 8 GB profile; for a bf16 small-context profile see [`start-9b-bf16.sh`](start-9b-bf16.sh).
 4. **Only one service per GPU** — stop any previous server before starting a new one.
 5. Building does not require model weights; this repo contains no weights, build artifacts, or logs (`build-*/`, `*.log`, binaries are all excluded via `.gitignore`).
 6. More background and field-test notes live in `src/`: `复现白皮书-NInfer-KVMem环-20261002.md` (reproduction whitepaper), `编译指南-怎么编.md` (build guide), `8G档-配置提醒-20261008.md` (8 GB config notes), `我方-新增能力与已解决问题.md` (added capabilities & fixed issues).

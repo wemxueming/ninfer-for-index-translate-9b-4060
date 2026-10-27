@@ -23,7 +23,7 @@
 
 - 基座模型：[IndexTeam/Index-Translate-9B](https://huggingface.co/IndexTeam/Index-Translate-9B)
 - 任务：翻译（EN ⇄ ZH），License: Apache-2.0
-- 需要的文件：`index_translate_9b_v3.ninfer`
+- 需要的文件：`index_translate_9b_v3.ninfer`、`index_chat_template.jinja`
 
 模型不含在本仓库中，需要单独下载（见下面「运行方法」）。
 
@@ -58,22 +58,22 @@ cmake --build build-89 --target ninfer-serve -j 8
 ### 下载模型
 
 ```bash
-hf download snowen/index-translate-9b-ninfer index_translate_9b_v3.ninfer --local-dir .
-# 或: huggingface-cli download snowen/index-translate-9b-ninfer index_translate_9b_v3.ninfer --local-dir .
+hf download snowen/index-translate-9b-ninfer index_translate_9b_v3.ninfer index_chat_template.jinja --local-dir .
+# 或: huggingface-cli download snowen/index-translate-9b-ninfer index_translate_9b_v3.ninfer index_chat_template.jinja --local-dir .
 ```
 
 ## 运行方法
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 \
-NINFER_KV_WINDOW=10240 NINFER_KV_RETRIEVE=8192 NINFER_KV_REUSE_HOSTBACKED=1 \
 ./build-89/apps/ninfer-serve ./index_translate_9b_v3.ninfer \
-  --host 127.0.0.1 --port 8091 --model-id index-translate-9b \
-  --max-context 8192 --max-concurrency 1 \
-  --derive-session-keys --max-shared-prefixes 0 \
-  --prefill-chunk 1024 \
-  --kv-capacity 10240 --kv-dtype int8 \
-  --host-kv-mib 2048
+  --device 0 \
+  --host 127.0.0.1 --port 8099 --chat-template index_chat_template.jinja \
+  --max-context 4096 --max-concurrency 8 --no-prefix-reuse \
+  --kv-dtype k8v4 \
+  --spec mtp --draft-tokens 2 --adaptive-mtp \
+  --no-thinking \
+  --device-profile auto \
+  --no-cuda-graph
 ```
 
 也可以直接使用根目录的启动脚本（如 [`start-9b.sh`](start-9b.sh)，需要把其中 `MODEL` 路径改为下载的工件文件名）。
@@ -81,16 +81,22 @@ NINFER_KV_WINDOW=10240 NINFER_KV_RETRIEVE=8192 NINFER_KV_REUSE_HOSTBACKED=1 \
 验证服务：
 
 ```bash
-curl http://127.0.0.1:8091/v1/chat/completions \
+curl http://127.0.0.1:8099/v1/chat/completions \
   -H 'Content-Type: application/json' \
-  -d '{"model":"index-translate-9b","messages":[{"role":"user","content":"Translate to English: 今天天气不错"}],"max_tokens":256}'
+  -d '{"model":"index_translate_9b_v3","messages":[{"role":"user","content":"Translate to English: 今天天气不错"}],"max_tokens":256}'
 ```
+
+（不传 `--model-id` 时，公开模型名取自定义工件的 metadata.name。）
+
+实测演示截图（RTX 4060 8 GB，decode ~70 tok/s，MTP 接受率 40+/45）：
+
+![实测演示](docs/demo.png)
 
 ## 注意事项
 
 1. **一个 GPU 架构一个干净构建目录**。不同时期的 `.obj` 混进同一次链接会做出启动即崩的二进制（`0xC0000005 @ 0x18c729`）。换架构/回滚版本后必须删掉 `.obj` 或换新目录，见 [`src/根因与修法-0x18c729-20261003.md`](src/根因与修法-0x18c729-20261003.md)。
 2. **不要用 sccache 包 nvcc**（实测会让 `fatbinary` 找不到中间 `.ptx`）；要缓存只给 C/CXX 加。
-3. **8 GB 显存靠 int8 KV + 主机环**：`--kv-dtype int8` 与 `NINFER_KV_REUSE_HOSTBACKED=1` 是关键；显存吃紧时降低 `--kv-capacity` / `--host-kv-mib`（bf16 小上下文档可参考 [`start-9b-bf16.sh`](start-9b-bf16.sh)）。
+3. **8 GB 显存靠 `--kv-dtype k8v4`（fp8 keys + nvfp4 values）与 `--device-profile auto`**：这是 RTX 4060 8 GB 档的关键组合；bf16 小上下文档可参考 [`start-9b-bf16.sh`](start-9b-bf16.sh)。
 4. **同一张卡一次只能跑一个服务**，启动前先停掉旧服务。
 5. 编译不需要模型权重；本仓库不含任何权重、编译产物与日志（`build-*/`、`*.log`、二进制等均被 `.gitignore` 排除）。
 6. 更多背景与实测记录见 `src/` 下的文档：`复现白皮书-NInfer-KVMem环-20261002.md`、`编译指南-怎么编.md`、`8G档-配置提醒-20261008.md`、`我方-新增能力与已解决问题.md`。
