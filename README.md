@@ -1,3 +1,5 @@
+**中文 README** | [English README](README.en.md)
+
 # ninfer-for-index-translate-9b-4060
 
 在 **RTX 4060（8 GB 显存）** 上运行 **Index-Translate-9B** 翻译模型的推理引擎仓库：NInfer fusion engine + KVMem 主机 KV 环（host-backed KV ring），提供 OpenAI 兼容的 `/v1/chat/completions` HTTP 服务。
